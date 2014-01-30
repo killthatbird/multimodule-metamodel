@@ -1,0 +1,89 @@
+def JPA_ANNOTATION_PROCESSOR = 'org.hibernate.jpamodelgen.JPAMetaModelEntityProcessor'
+def QUERY_DSL_ANNOTATION_PROCESSOR = 'com.mysema.query.apt.jpa.JPAAnnotationProcessor'
+
+allprojects {
+    apply plugin: 'java'
+    apply plugin: 'idea'
+
+    def generated = file('src/main/generated')
+
+    sourceSets.main.java.srcDirs += generated
+    sourceSets.test.java.srcDirs += generated
+
+    repositories {
+        mavenCentral()
+    }
+
+    configurations {
+        metamodel
+    }
+
+    dependencies {
+        testCompile group: 'junit', name: 'junit', version: '4.11'
+    }
+
+    task generateMetamodel << {
+        runAnnotationProcessor(project, JPA_ANNOTATION_PROCESSOR, [project(':dao-common')])
+        runAnnotationProcessor(project, QUERY_DSL_ANNOTATION_PROCESSOR, [project(':dao-common')])
+    }
+
+    task cleanGenerated << {
+        generated.listFiles().findAll { subfile ->
+            !subfile.getName().startsWith('.')
+        }.each { subfile ->
+            println "deleting ${subfile}"
+            delete(subfile)
+        }
+    }
+}
+
+project(':dao-common') {
+    dependencies {
+        compile 'org.hibernate:hibernate-entitymanager:4.3.0.Final'
+        compile 'com.mysema.querydsl:querydsl-apt:3.3.0'
+        compile('com.mysema.querydsl:querydsl-jpa:3.3.0') {
+            exclude group: 'org.hibernate.javax.persistence'
+        }
+    }
+}
+
+project(':dao-custom') {
+    dependencies {
+        compile project(':dao-common')
+        compile 'org.hsqldb:hsqldb:2.3.1'
+        metamodel 'org.hibernate:hibernate-jpamodelgen:4.3.0.Final'
+    }
+
+    idea {
+        module {
+            sourceDirs += file('src/main/generated')
+        }
+    }
+
+    compileJava.dependsOn generateMetamodel
+    clean.dependsOn cleanGenerated
+}
+
+task wrapper(type: Wrapper) {
+    gradleVersion = '1.10'
+}
+
+def runAnnotationProcessor(Project project, String processor, List<Project> deps) {
+    def commonSources = deps.collect { dep ->
+        dep.sourceSets.main.java.srcDirs
+    }.flatten().findAll { dir ->
+        dir.exists()
+    }.collect { dir ->
+        dir.getAbsolutePath()
+    }.join(':')
+
+    ant.javac(
+            srcdir: "${project.projectDir}/src/main/java:${commonSources}",
+            destdir: "${project.projectDir}/src/main/generated",
+            classpath: "${project.runtimeClasspath.asPath}:${project.configurations.metamodel.asPath}"
+    ) {
+        compilerarg(value: '-proc:only')
+        compilerarg(value: '-processor')
+        compilerarg(value: processor)
+    }
+}
