@@ -1,17 +1,35 @@
-def JPA_ANNOTATION_PROCESSOR = 'org.hibernate.jpamodelgen.JPAMetaModelEntityProcessor'
-def QUERY_DSL_ANNOTATION_PROCESSOR = 'com.mysema.query.apt.jpa.JPAAnnotationProcessor'
-
 allprojects {
     apply plugin: 'java'
     apply plugin: 'idea'
 
-    def generated = file('src/main/generated')
-
-    sourceSets.main.java.srcDirs += generated
-    sourceSets.test.java.srcDirs += generated
-
     repositories {
         mavenCentral()
+    }
+
+    dependencies {
+        testCompile group: 'junit', name: 'junit', version: '4.11'
+    }
+}
+
+project(':common-domain') {
+    dependencies {
+        compile 'org.hibernate.javax.persistence:hibernate-jpa-2.1-api:1.0.0.Final'
+    }
+}
+
+project(':custom-domain') {
+    dependencies {
+        compile project(':common-domain')
+    }
+}
+
+project(':custom-dao') {
+    sourceSets {
+        generated {
+            java {
+                srcDirs = ['src/main/generated']
+            }
+        }
     }
 
     configurations {
@@ -19,39 +37,24 @@ allprojects {
     }
 
     dependencies {
-        testCompile group: 'junit', name: 'junit', version: '4.11'
-    }
-
-    task generateMetamodel << {
-        runAnnotationProcessor(project, JPA_ANNOTATION_PROCESSOR, [project(':dao-common')])
-        runAnnotationProcessor(project, QUERY_DSL_ANNOTATION_PROCESSOR, [project(':dao-common')])
-    }
-
-    task cleanGenerated << {
-        generated.listFiles().findAll { subfile ->
-            !subfile.getName().startsWith('.')
-        }.each { subfile ->
-            println "deleting ${subfile}"
-            delete(subfile)
-        }
-    }
-}
-
-project(':dao-common') {
-    dependencies {
+        compile project(':custom-domain')
+        compile 'org.hsqldb:hsqldb:2.3.1'
         compile 'org.hibernate:hibernate-entitymanager:4.3.0.Final'
         compile 'com.mysema.querydsl:querydsl-apt:3.3.0'
         compile('com.mysema.querydsl:querydsl-jpa:3.3.0') {
             exclude group: 'org.hibernate.javax.persistence'
         }
-    }
-}
-
-project(':dao-custom') {
-    dependencies {
-        compile project(':dao-common')
-        compile 'org.hsqldb:hsqldb:2.3.1'
         metamodel 'org.hibernate:hibernate-jpamodelgen:4.3.0.Final'
+    }
+
+    task generateQueryDslMetamodel(type: GenerateMetaModel) {
+        dependencies = [project(':common-domain'), project(':custom-domain')]
+        annotationProcessor = GenerateMetaModel.QUERY_DSL_ANNOTATION_PROCESSOR
+    }
+
+    task generateJpaMetamodel(type: GenerateMetaModel) {
+        dependencies = [project(':common-domain'), project(':custom-domain')]
+        annotationProcessor = GenerateMetaModel.JPA_ANNOTATION_PROCESSOR
     }
 
     idea {
@@ -60,30 +63,39 @@ project(':dao-custom') {
         }
     }
 
-    compileJava.dependsOn generateMetamodel
-    clean.dependsOn cleanGenerated
+    compileJava {
+        dependsOn generateQueryDslMetamodel, generateJpaMetamodel
+        source sourceSets.generated.java.srcDirs
+    }
+
+    clean {
+        delete sourceSets.generated.java.srcDirs
+    }
 }
 
 task wrapper(type: Wrapper) {
     gradleVersion = '1.10'
 }
 
-def runAnnotationProcessor(Project project, String processor, List<Project> deps) {
-    def commonSources = deps.collect { dep ->
-        dep.sourceSets.main.java.srcDirs
-    }.flatten().findAll { dir ->
-        dir.exists()
-    }.collect { dir ->
-        dir.getAbsolutePath()
-    }.join(':')
+class GenerateMetaModel extends JavaCompile {
+    public static final String JPA_ANNOTATION_PROCESSOR = 'org.hibernate.jpamodelgen.JPAMetaModelEntityProcessor'
+    public static final String QUERY_DSL_ANNOTATION_PROCESSOR = 'com.mysema.query.apt.jpa.JPAAnnotationProcessor'
 
-    ant.javac(
-            srcdir: "${project.projectDir}/src/main/java:${commonSources}",
-            destdir: "${project.projectDir}/src/main/generated",
-            classpath: "${project.runtimeClasspath.asPath}:${project.configurations.metamodel.asPath}"
-    ) {
-        compilerarg(value: '-proc:only')
-        compilerarg(value: '-processor')
-        compilerarg(value: processor)
+    GenerateMetaModel() {
+        classpath = project.configurations.compile + project.configurations.metamodel
+        destinationDir = project.sourceSets.generated.java.srcDirs.iterator().next() as File
+    }
+
+    void setDependencies(Iterable<Project> projects) {
+        setSource(projects.collect { project ->
+            project.sourceSets.main.java
+        }.flatten())
+    }
+
+    void setAnnotationProcessor(String processor) {
+        options.compilerArgs = [
+                "-proc:only",
+                "-processor", processor
+        ]
     }
 }
